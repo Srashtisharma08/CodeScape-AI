@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+tree-sitter
+tree-sitter-python
+tree-sitter-java
+tree-sitter-javascript
+pytest
+httpx
