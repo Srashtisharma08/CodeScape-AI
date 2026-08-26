@@ -1,4 +1,13 @@
-import { ParseRequest, ParseResponse, ExecuteRequest, ExecuteResponse } from '../types';
+import {
+  ParseRequest,
+  ParseResponse,
+  ExecuteRequest,
+  ExecuteResponse,
+  ExplanationRequest,
+  ExplanationResponse,
+  ProgramSummaryRequest,
+  ProgramSummaryResponse,
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -21,41 +30,26 @@ export async function parseCode(request: ParseRequest): Promise<ParseResponse> {
     throw new Error(`Network Error: Failed to reach backend at ${url}. (${errorMsg}). Is the FastAPI server running on http://127.0.0.1:8000?`);
   }
 
-  console.log('[API Response Status]:', response.status, response.statusText);
-
   if (!response.ok) {
     let errorDetail = `HTTP ${response.status} ${response.statusText}`.trim();
     try {
       const errorJson = await response.json();
-      console.error('[API Response Error Payload]:', errorJson);
-
       if (typeof errorJson.detail === 'string') {
         errorDetail = errorJson.detail;
       } else if (Array.isArray(errorJson.detail)) {
         errorDetail = errorJson.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
       } else if (errorJson.error) {
         errorDetail = errorJson.error;
-      } else if (errorJson.message) {
-        errorDetail = errorJson.message;
       }
     } catch {
       const rawText = await response.text().catch(() => '');
-      if (rawText) {
-        console.error('[API Response Raw Text]:', rawText);
-        errorDetail += `: ${rawText.slice(0, 150)}`;
-      }
+      if (rawText) errorDetail += `: ${rawText.slice(0, 150)}`;
     }
-
     throw new Error(`Backend Error (${response.status}): ${errorDetail}`);
   }
 
   try {
     const data: ParseResponse = await response.json();
-    console.log('[API Parse Success]:', {
-      nodeCount: data.parse_info?.node_count,
-      parseTimeMs: data.parse_info?.parse_time_ms,
-      rootType: data.ast?.type,
-    });
     return data;
   } catch (jsonErr) {
     console.error('[API Invalid JSON Response]:', jsonErr);
@@ -100,15 +94,69 @@ export async function executeCode(request: ExecuteRequest): Promise<ExecuteRespo
 
   try {
     const data: ExecuteResponse = await response.json();
-    console.log('[API Execute Success]:', {
-      totalSteps: data.trace?.total_steps,
-      status: data.trace?.status,
-    });
     return data;
   } catch (jsonErr) {
     console.error('[API Invalid Execution JSON Response]:', jsonErr);
     throw new Error('Invalid Response: Execution engine returned malformed data.');
   }
+}
+
+export async function explainStep(request: ExplanationRequest): Promise<ExplanationResponse> {
+  const url = `${API_BASE}/explain`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (netErr) {
+    const errorMsg = netErr instanceof Error ? netErr.message : String(netErr);
+    throw new Error(`Network Error: Failed to reach AI explanation endpoint. (${errorMsg})`);
+  }
+
+  if (!response.ok) {
+    let errorDetail = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      if (errJson.detail) errorDetail = errJson.detail;
+    } catch {}
+    throw new Error(`AI Explanation Error: ${errorDetail}`);
+  }
+
+  return await response.json();
+}
+
+export async function explainProgram(request: ProgramSummaryRequest): Promise<ProgramSummaryResponse> {
+  const url = `${API_BASE}/explain-program`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (netErr) {
+    const errorMsg = netErr instanceof Error ? netErr.message : String(netErr);
+    throw new Error(`Network Error: Failed to reach program summary endpoint. (${errorMsg})`);
+  }
+
+  if (!response.ok) {
+    let errorDetail = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      if (errJson.detail) errorDetail = errJson.detail;
+    } catch {}
+    throw new Error(`Program Summary Error: ${errorDetail}`);
+  }
+
+  return await response.json();
 }
 
 export async function fetchSupportedLanguages(): Promise<string[]> {

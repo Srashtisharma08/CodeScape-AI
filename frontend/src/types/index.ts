@@ -79,3 +79,49 @@ export interface ExecuteRequest {
 export interface ExecuteResponse {
   trace: ExecutionTrace;
 }
+
+/* Phase 4: AI Explanation Engine Types */
+
+export type ExplanationLevel = 'beginner' | 'intermediate' | 'detailed';
+
+export interface ExplanationRequest {
+  language: string;
+  code: string;
+  execution_trace: ExecutionTrace;
+  current_step_index: number;
+  explanation_level: ExplanationLevel;
+}
+
+export interface VariableInvolved {
+  name: string;
+  value: any;
+  type: string;
+}
+
+export interface ExplanationResponse {
+  step_id: string;
+  step_index: number;
+  line_start: number;
+  line_end: number;
+  title: string;
+  what_happened: string;
+  why: string;
+  variables_involved: VariableInvolved[];
+  concepts: string[];
+  explanation_level: ExplanationLevel;
+}
+
+export interface ProgramSummaryRequest {
+  language: string;
+  code: string;
+  execution_trace: ExecutionTrace;
+}
+
+export interface ProgramSummaryResponse {
+  purpose: string;
+  how_it_works: string[];
+  concepts: string[];
+  final_variables: Record<string, any>;
+  output: string[];
+  return_value?: any;
+}

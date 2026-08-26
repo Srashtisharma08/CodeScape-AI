@@ -1,6 +1,7 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import CodeEditor, { DEFAULT_CODE } from '../components/CodeEditor';
 import LanguageSelector from '../components/LanguageSelector';
+import SampleProgramsSelector, { SampleProgram } from '../components/SampleProgramsSelector';
 import ASTTreeView from '../components/ASTTreeView';
 import ParseInfoPanel from '../components/ParseInfoPanel';
 import StatusConsole from '../components/StatusConsole';
@@ -9,7 +10,14 @@ import ExecutionControls from '../components/ExecutionControls';
 import ExecutionTimeline from '../components/ExecutionTimeline';
 import VariableStatePanel from '../components/VariableStatePanel';
 import OutputPanel from '../components/OutputPanel';
-import { parseCode, executeCode } from '../services/api';
+import VisualizationCanvas from '../components/VisualizationCanvas';
+import AIExplanationPanel from '../components/AIExplanationPanel';
+import ProgramSummaryPanel from '../components/ProgramSummaryPanel';
+
+import { parseCode, executeCode, explainStep, explainProgram } from '../services/api';
+import { planVisualization } from '../visualization/visualizationPlanner';
+import { computeVisualizationState } from '../visualization/visualizationState';
+
 import type {
   SupportedLanguage,
   ASTNode,
@@ -17,6 +25,9 @@ import type {
   ConsoleMessage,
   ExecutionTrace,
   ExecutionStep,
+  ExplanationLevel,
+  ExplanationResponse,
+  ProgramSummaryResponse,
 } from '../types';
 
 let messageIdCounter = 0;
@@ -35,16 +46,30 @@ export default function HomePage() {
   const [code, setCode] = useState<string>(DEFAULT_CODE.python);
   const [ast, setAst] = useState<ASTNode | null>(null);
   const [parseInfo, setParseInfo] = useState<ParseInfo | null>(null);
-  const [activeTab, setActiveTab] = useState('ast');
+  const [activeTab, setActiveTab] = useState('visual');
   const [messages, setMessages] = useState<ConsoleMessage[]>([]);
   const [isParsing, setIsParsing] = useState(false);
 
-  // Phase 2 Execution State
+  // Phase 2 & 3 Execution & Visualization State
   const [trace, setTrace] = useState<ExecutionTrace | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<number>(1);
+
+  // Phase 4 AI Explanation State
+  const [explanationLevel, setExplanationLevel] = useState<ExplanationLevel>('intermediate');
+  const [currentExplanation, setCurrentExplanation] = useState<ExplanationResponse | null>(null);
+  const [isExplainingStep, setIsExplainingStep] = useState(false);
+  const [explanationError, setExplanationError] = useState<string | null>(null);
+
+  // Whole Program Summary Modal State
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [programSummary, setProgramSummary] = useState<ProgramSummaryResponse | null>(null);
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+
+  // Explanation cache map: key = `${step_index}_${level}`
+  const explanationCacheRef = useRef<Map<string, ExplanationResponse>>(new Map());
 
   // Resizable panel state
   const [leftWidth, setLeftWidth] = useState(50);
@@ -61,7 +86,23 @@ export default function HomePage() {
       setTrace(null);
       setCurrentStepIndex(0);
       setIsPlaying(false);
+      explanationCacheRef.current.clear();
+      setCurrentExplanation(null);
       addMessage('info', `Switched active language to ${newLang.toUpperCase()}`);
+    },
+    [addMessage]
+  );
+
+  const handleSelectSample = useCallback(
+    (sample: SampleProgram) => {
+      setLanguage(sample.language);
+      setCode(sample.code);
+      setTrace(null);
+      setCurrentStepIndex(0);
+      setIsPlaying(false);
+      explanationCacheRef.current.clear();
+      setCurrentExplanation(null);
+      addMessage('info', `Loaded example program: ${sample.title}`);
     },
     [addMessage]
   );
@@ -112,7 +153,7 @@ export default function HomePage() {
     }
   }, [code, language, addMessage]);
 
-  // Phase 2 Execution Handler
+  // Phase 2 & 3 Execution & Visualization Handler
   const handleExecute = useCallback(async () => {
     if (!code.trim()) {
       addMessage('warning', 'Execution skipped: Code block is empty');
@@ -126,6 +167,8 @@ export default function HomePage() {
 
     setIsExecuting(true);
     setIsPlaying(false);
+    explanationCacheRef.current.clear();
+    setCurrentExplanation(null);
     addMessage('info', 'Starting Python execution engine...');
 
     try {
@@ -152,7 +195,7 @@ export default function HomePage() {
         setCurrentStepIndex(0);
       }
 
-      setActiveTab('execution');
+      setActiveTab('visual');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error('[HomePage handleExecute Error]:', err);
@@ -162,7 +205,87 @@ export default function HomePage() {
     }
   }, [code, language, addMessage]);
 
-  // Playback Timer
+  // Phase 3 Visualization Planner & State Computation
+  const visualizationEvents = useMemo(() => {
+    return planVisualization(trace);
+  }, [trace]);
+
+  const visState = useMemo(() => {
+    return computeVisualizationState(visualizationEvents, trace, currentStepIndex);
+  }, [visualizationEvents, trace, currentStepIndex]);
+
+  // Phase 4 AI Explanation Fetcher with Caching
+  const fetchStepExplanation = useCallback(
+    async (stepIdx: number, level: ExplanationLevel) => {
+      if (!trace || !trace.steps || stepIdx < 1 || stepIdx > trace.steps.length) {
+        setCurrentExplanation(null);
+        return;
+      }
+
+      const cacheKey = `${stepIdx}_${level}`;
+      if (explanationCacheRef.current.has(cacheKey)) {
+        setCurrentExplanation(explanationCacheRef.current.get(cacheKey)!);
+        return;
+      }
+
+      setIsExplainingStep(true);
+      setExplanationError(null);
+
+      try {
+        const response = await explainStep({
+          language,
+          code,
+          execution_trace: trace,
+          current_step_index: stepIdx,
+          explanation_level: level,
+        });
+
+        explanationCacheRef.current.set(cacheKey, response);
+        setCurrentExplanation(response);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error('[fetchStepExplanation Error]:', err);
+        setExplanationError(errorMsg);
+      } finally {
+        setIsExplainingStep(false);
+      }
+    },
+    [trace, language, code]
+  );
+
+  // Automatically update AI explanation when currentStepIndex or explanationLevel changes
+  useEffect(() => {
+    if (currentStepIndex > 0 && trace && trace.steps.length > 0) {
+      fetchStepExplanation(currentStepIndex, explanationLevel);
+    }
+  }, [currentStepIndex, explanationLevel, trace, fetchStepExplanation]);
+
+  // Whole Program Explanation Handler
+  const handleExplainProgram = useCallback(async () => {
+    if (!trace) {
+      addMessage('warning', 'Run execution first to explain the whole program');
+      return;
+    }
+
+    setIsSummaryOpen(true);
+    setIsLoadingSummary(true);
+
+    try {
+      const summary = await explainProgram({
+        language,
+        code,
+        execution_trace: trace,
+      });
+      setProgramSummary(summary);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      addMessage('error', `Failed to generate program summary: ${errorMsg}`);
+    } finally {
+      setIsLoadingSummary(false);
+    }
+  }, [trace, language, code, addMessage]);
+
+  // Playback Timer Loop
   useEffect(() => {
     let timerId: any = null;
 
@@ -172,7 +295,7 @@ export default function HomePage() {
         setCurrentStepIndex((prev) => {
           if (prev >= trace.steps.length) {
             setIsPlaying(false);
-            addMessage('info', 'Execution playback completed');
+            addMessage('info', 'Visual explanation playback completed');
             return prev;
           }
           return prev + 1;
@@ -212,7 +335,7 @@ export default function HomePage() {
     setMessages([]);
   }, []);
 
-  // Compute current step data
+  // Compute current step details
   const currentStep: ExecutionStep | null =
     trace && currentStepIndex > 0 && currentStepIndex <= trace.steps.length
       ? trace.steps[currentStepIndex - 1]
@@ -247,14 +370,65 @@ export default function HomePage() {
 
   const tabs = [
     {
-      id: 'ast',
-      label: '🌳 AST Tree',
-      content: <ASTTreeView ast={ast} />,
+      id: 'visual',
+      label: '🎨 Visual Explanation',
+      content: (
+        <div className="execution-tab-view">
+          <ExecutionControls
+            language={language}
+            isExecuting={isExecuting}
+            hasTrace={Boolean(trace && trace.steps.length > 0)}
+            isPlaying={isPlaying}
+            currentStepIndex={currentStepIndex}
+            totalSteps={trace ? trace.steps.length : 0}
+            speed={speed}
+            onExecute={handleExecute}
+            onPlayPause={() => setIsPlaying(!isPlaying)}
+            onNext={handleNextStep}
+            onPrev={handlePrevStep}
+            onReset={handleResetStep}
+            onSpeedChange={setSpeed}
+          />
+          <VisualizationCanvas
+            visState={visState}
+            currentStepIndex={currentStepIndex}
+            totalSteps={trace ? trace.steps.length : 0}
+          />
+        </div>
+      ),
     },
     {
-      id: 'info',
-      label: '📊 Parse Info',
-      content: <ParseInfoPanel parseInfo={parseInfo} />,
+      id: 'ai-explain',
+      label: '🤖 AI Explanation',
+      content: (
+        <div className="execution-tab-view">
+          <ExecutionControls
+            language={language}
+            isExecuting={isExecuting}
+            hasTrace={Boolean(trace && trace.steps.length > 0)}
+            isPlaying={isPlaying}
+            currentStepIndex={currentStepIndex}
+            totalSteps={trace ? trace.steps.length : 0}
+            speed={speed}
+            onExecute={handleExecute}
+            onPlayPause={() => setIsPlaying(!isPlaying)}
+            onNext={handleNextStep}
+            onPrev={handlePrevStep}
+            onReset={handleResetStep}
+            onSpeedChange={setSpeed}
+          />
+          <AIExplanationPanel
+            explanation={currentExplanation}
+            isLoading={isExplainingStep}
+            error={explanationError}
+            explanationLevel={explanationLevel}
+            currentStepIndex={currentStepIndex}
+            totalSteps={trace ? trace.steps.length : 0}
+            onLevelChange={setExplanationLevel}
+            onExplainProgram={handleExplainProgram}
+          />
+        </div>
+      ),
     },
     {
       id: 'execution',
@@ -304,6 +478,16 @@ export default function HomePage() {
         </div>
       ),
     },
+    {
+      id: 'ast',
+      label: '🌳 AST Tree',
+      content: <ASTTreeView ast={ast} />,
+    },
+    {
+      id: 'info',
+      label: '📊 Parse Info',
+      content: <ParseInfoPanel parseInfo={parseInfo} />,
+    },
   ];
 
   return (
@@ -314,7 +498,7 @@ export default function HomePage() {
           <div className="app-header__logo-icon">CS</div>
           <span className="app-header__title">CodeScape AI</span>
         </div>
-        <span className="app-header__badge">Phase 2</span>
+        <span className="app-header__badge">Phase 4</span>
       </header>
 
       {/* Main Content */}
@@ -323,6 +507,7 @@ export default function HomePage() {
         <div className="panel panel--left" style={{ width: `${leftWidth}%` }}>
           <div className="controls-bar">
             <LanguageSelector value={language} onChange={handleLanguageChange} />
+            <SampleProgramsSelector onSelectSample={handleSelectSample} />
 
             <button
               className={`parse-button ${isParsing ? 'parse-button--loading' : ''}`}
@@ -337,7 +522,7 @@ export default function HomePage() {
                   Parsing...
                 </>
               ) : (
-                <>🌳 Parse AST</>
+                <>🌳 Parse</>
               )}
             </button>
 
@@ -346,7 +531,7 @@ export default function HomePage() {
               onClick={handleExecute}
               disabled={isExecuting || language !== 'python'}
               id="execute-button"
-              title={language !== 'python' ? 'Execution engine is active for Python' : 'Run Python Execution'}
+              title={language !== 'python' ? 'Execution engine is active for Python' : 'Run Python Execution & Visual Explanation'}
             >
               {isExecuting ? (
                 <>
@@ -354,7 +539,7 @@ export default function HomePage() {
                   Executing...
                 </>
               ) : (
-                <>⚡ Execute</>
+                <>🎨 Visual Explain</>
               )}
             </button>
           </div>
@@ -381,6 +566,15 @@ export default function HomePage() {
 
       {/* Status Console */}
       <StatusConsole messages={messages} onClear={handleClearConsole} />
+
+      {/* Program Summary Modal */}
+      {isSummaryOpen && (
+        <ProgramSummaryPanel
+          summary={programSummary}
+          isLoading={isLoadingSummary}
+          onClose={() => setIsSummaryOpen(false)}
+        />
+      )}
     </div>
   );
 }
