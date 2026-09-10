@@ -174,3 +174,43 @@ export async function fetchSupportedLanguages(): Promise<string[]> {
     throw new Error(`Failed to fetch supported languages: ${errorMsg}`);
   }
 }
+
+import type { ProjectAnalysisRequest, ProjectAnalysisResponse } from '../types/project';
+
+export async function analyzeProject(request: ProjectAnalysisRequest): Promise<ProjectAnalysisResponse> {
+  const url = `${API_BASE}/analyze-project`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (netErr) {
+    const errorMsg = netErr instanceof Error ? netErr.message : String(netErr);
+    throw new Error(`Network Error: Failed to reach project analysis endpoint. (${errorMsg})`);
+  }
+
+  if (!response.ok) {
+    let errorDetail = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      if (errJson.detail) errorDetail = errJson.detail;
+    } catch {}
+    throw new Error(`Project Analysis Error: ${errorDetail}`);
+  }
+
+  return await response.json();
+}
+
+export async function fetchSampleProject(): Promise<{ project_name: string; files: { path: string; content: string }[] }> {
+  const url = `${API_BASE}/sample-project`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load sample project: HTTP ${response.status}`);
+  }
+  return await response.json();
+}
+

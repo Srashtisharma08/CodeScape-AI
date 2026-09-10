@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import CodeEditor, { DEFAULT_CODE } from '../components/CodeEditor';
 import LanguageSelector from '../components/LanguageSelector';
 import SampleProgramsSelector, { SampleProgram } from '../components/SampleProgramsSelector';
@@ -498,8 +499,14 @@ export default function HomePage() {
           <div className="app-header__logo-icon">CS</div>
           <span className="app-header__title">CodeScape AI</span>
         </div>
-        <span className="app-header__badge">Phase 4</span>
+        <div className="app-header__actions">
+          <Link to="/project" className="btn-header-action btn-header-action--primary">
+            🏗️ Project Explorer
+          </Link>
+          <span className="app-header__badge">Phase 5</span>
+        </div>
       </header>
+
 
       {/* Main Content */}
       <div className="app-main">
